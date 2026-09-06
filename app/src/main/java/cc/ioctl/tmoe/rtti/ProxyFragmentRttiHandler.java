@@ -402,6 +402,11 @@ public class ProxyFragmentRttiHandler {
         mTargetFragment.onConfigurationChanged(newConfig);
     }
 
+    // Telegram 12.x passes false while querying predictive-back availability.
+    public boolean onBackPressed$dispatcher(boolean invoked) {
+        return !invoked || mTargetFragment.onBackPressed();
+    }
+
     public boolean onBackPressed$dispatcher() {
         return mTargetFragment.onBackPressed();
     }

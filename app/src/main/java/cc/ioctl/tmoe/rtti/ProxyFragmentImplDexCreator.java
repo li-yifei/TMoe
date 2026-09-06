@@ -52,9 +52,6 @@ public class ProxyFragmentImplDexCreator {
 
     public static File createProxyFragmentImplDex(Class<?> baseFragmentClass, Class<?> actionBar, Class<?> actionBarLayout)
             throws ReflectiveOperationException, IOException {
-        String sigBaseFragmentClass = DexFieldDescriptor.getTypeSig(baseFragmentClass);
-        String sigActionBar = DexFieldDescriptor.getTypeSig(actionBar);
-        String sigActionBarLayout = DexFieldDescriptor.getTypeSig(actionBarLayout);
         String hostAppVersionName = HostInfo.getVersionName();
         String pluginVersionName = BuildConfig.VERSION_NAME;
         String hashCode = String.valueOf(Objects.hash(baseFragmentClass, actionBar, actionBarLayout,
@@ -80,83 +77,86 @@ public class ProxyFragmentImplDexCreator {
         if (dexFile.exists() && dexFile.length() > 0) {
             return dexFile;
         }
-        // create dex file if not exists
-        // find all exported methods in ProxyFragmentRttiHandler
-        ArrayList<DexMethodDescriptor> exportedMethods = new ArrayList<>();
-        for (Method m : ProxyFragmentRttiHandler.class.getDeclaredMethods()) {
-            if (Modifier.isPublic(m.getModifiers()) && !Modifier.isStatic(m.getModifiers())
-                    && m.getName().endsWith("$dispatcher")) {
-                String originalMethodName = m.getName().substring(0, m.getName().length() - "$dispatcher".length());
-                DexMethodDescriptor md = new DexMethodDescriptor(m);
-                exportedMethods.add(new DexMethodDescriptor(md.declaringClass, originalMethodName, md.signature));
-            }
-        }
-        // find all imported methods in IProxyFragmentObject
-        ArrayList<DexMethodDescriptor> importedSuperMethods = new ArrayList<>();
-        ArrayList<DexMethodDescriptor> missingImportedSuperMethods = new ArrayList<>();
-        for (Method m : IProxyFragmentObject.class.getDeclaredMethods()) {
-            if (m.getName().endsWith("$super")) {
-                boolean found = false;
-                int argCount = m.getParameterTypes().length;
-                // find corresponding method in host BaseFragment class
-                String originalMethodName = m.getName().substring(0, m.getName().length() - "$super".length());
-                for (Method hostMethod : baseFragmentClass.getDeclaredMethods()) {
-                    if (hostMethod.getName().equals(originalMethodName) && hostMethod.getParameterTypes().length == argCount) {
-                        // use original method name
-                        importedSuperMethods.add(new DexMethodDescriptor(hostMethod));
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    missingImportedSuperMethods.add(new DexMethodDescriptor(m));
-                }
-            }
-        }
-        if (missingImportedSuperMethods.size() > 0) {
-            throw new RuntimeException("Missing imported methods in host " + baseFragmentClass
-                    + ": " + Arrays.toString(missingImportedSuperMethods.toArray()));
-        }
-        String sigBaseFragment = DexFieldDescriptor.getTypeSig(baseFragmentClass);
-        // create super method accessor
-        ArrayList<ImmutableMethod> superMethodAccessors = new ArrayList<>();
-        for (DexMethodDescriptor md : importedSuperMethods) {
-            ImmutableMethod method = generateProxySuperStubMethod(sigBaseFragment, md, actionBar, actionBarLayout);
-            superMethodAccessors.add(method);
-        }
-        // create proxy method accessor
-        ArrayList<ImmutableMethod> proxyMethodAccessors = new ArrayList<>();
-        for (DexMethodDescriptor md : exportedMethods) {
-            ImmutableMethod method = generateProxyDispatcherMethod(sigBaseFragment, md, actionBar, actionBarLayout);
-            proxyMethodAccessors.add(method);
-        }
-        ArrayList<ImmutableMethod> proxyConstructors = generateProxyClassConstructor(sigBaseFragment);
-        ArrayList<org.jf.dexlib2.iface.Method> declaredMethods = new ArrayList<>();
-        declaredMethods.addAll(superMethodAccessors);
-        declaredMethods.addAll(proxyMethodAccessors);
-        declaredMethods.addAll(proxyConstructors);
-        // proxy class definition
-        // package cc.ioctl.tmoe.dynamic;
-        // public class ProxyFragmentImpl extends BaseFragment implements IProxyFragmentObject {
-        //     private final cc.ioctl.tmoe.rtti.ProxyFragmentRttiHandler h;
-        //     public ProxyFragmentImpl(ProxyFragmentRttiHandler handler, Bundle args) {
-        //         super(args);
-        //         this.h = handler;
-        //     }
-        // }
-        // create proxy class
-        ImmutableField handlerField = new ImmutableField(PROXY_FRAGMENT_IMPL_TYPE, "h",
-                DexFieldDescriptor.getTypeSig(ProxyFragmentRttiHandler.class), Modifier.PRIVATE, null, null, null);
-        ImmutableClassDef proxyFragmentImplClassDef = new ImmutableClassDef(PROXY_FRAGMENT_IMPL_TYPE, Modifier.PUBLIC,
-                sigBaseFragment, Collections.singletonList(DexMethodDescriptor.getTypeSig(IProxyFragmentObject.class)),
-                "ProxyFragmentImpl.dexlib2", null, Collections.singletonList(handlerField), declaredMethods);
-        // create proxy dex
-        ImmutableDexFile proxyDex = new ImmutableDexFile(Opcodes.forDexVersion(35), Collections.singletonList(proxyFragmentImplClassDef));
-        // create proxy class file
+        ImmutableDexFile proxyDex = generateProxyDex(baseFragmentClass, actionBar, actionBarLayout);
         dexFile.createNewFile();
         DexFileFactory.writeDexFile(dexFile.getAbsolutePath(), proxyDex);
         dexFile.setReadOnly();
         return dexFile;
+    }
+
+    // Kept separate from the on-device cache so host API compatibility can be tested on the JVM.
+    static ImmutableDexFile generateProxyDex(Class<?> baseFragmentClass, Class<?> actionBar,
+                                             Class<?> actionBarLayout) throws NoSuchMethodException {
+        String sigBaseFragment = DexFieldDescriptor.getTypeSig(baseFragmentClass);
+        ArrayList<org.jf.dexlib2.iface.Method> declaredMethods = new ArrayList<>();
+        for (Method m : IProxyFragmentObject.class.getDeclaredMethods()) {
+            if (!m.getName().endsWith("$super")) {
+                continue;
+            }
+            String name = m.getName().substring(0, m.getName().length() - "$super".length());
+            Method host = findHostMethod(baseFragmentClass, actionBar, actionBarLayout, name, m, true);
+            if (host == null) {
+                throw new NoSuchMethodException("Missing imported method in host " + baseFragmentClass + ": " + m);
+            }
+            declaredMethods.add(generateProxySuperStubMethod(sigBaseFragment,
+                    new DexMethodDescriptor(host), new DexMethodDescriptor(m), actionBar, actionBarLayout));
+        }
+        for (Method m : ProxyFragmentRttiHandler.class.getDeclaredMethods()) {
+            if (!Modifier.isPublic(m.getModifiers()) || Modifier.isStatic(m.getModifiers())
+                    || !m.getName().endsWith("$dispatcher")) {
+                continue;
+            }
+            String name = m.getName().substring(0, m.getName().length() - "$dispatcher".length());
+            Method host = findHostMethod(baseFragmentClass, actionBar, actionBarLayout, name, m, false);
+            if (host != null) {
+                // Use the actual host descriptor for the override, including covariant return types.
+                declaredMethods.add(generateProxyDispatcherMethod(sigBaseFragment,
+                        new DexMethodDescriptor(host), actionBar, actionBarLayout));
+            }
+            // An absent or incompatible callback is inherited from the host. In particular,
+            // finishFragment(boolean):boolean must retain the host's success/failure result.
+        }
+        declaredMethods.addAll(generateProxyClassConstructor(sigBaseFragment));
+        ImmutableField handlerField = new ImmutableField(PROXY_FRAGMENT_IMPL_TYPE, "h",
+                RTTI_HANDLER_TYPE, Modifier.PRIVATE, null, null, null);
+        ImmutableClassDef classDef = new ImmutableClassDef(PROXY_FRAGMENT_IMPL_TYPE, Modifier.PUBLIC,
+                sigBaseFragment, Collections.singletonList(DexMethodDescriptor.getTypeSig(IProxyFragmentObject.class)),
+                "ProxyFragmentImpl.dexlib2", null, Collections.singletonList(handlerField), declaredMethods);
+        return new ImmutableDexFile(Opcodes.forDexVersion(35), Collections.singletonList(classDef));
+    }
+
+    private static String bridgeType(Class<?> type, Class<?> base, Class<?> actionBar, Class<?> layout) {
+        if (type == base) return OBJECT_TYPE;
+        if (type == actionBar || type == layout) return VIEW_GROUP_TYPE;
+        return DexMethodDescriptor.getTypeSig(type);
+    }
+
+    private static Method findHostMethod(Class<?> base, Class<?> actionBar, Class<?> layout,
+                                          String name, Method bridge, boolean superCall) {
+        for (Class<?> owner = base; owner != null; owner = owner.getSuperclass()) {
+            for (Method host : owner.getDeclaredMethods()) {
+                int modifiers = host.getModifiers();
+                if (!host.getName().equals(name) || Modifier.isStatic(modifiers)
+                        || !(Modifier.isPublic(modifiers) || Modifier.isProtected(modifiers))
+                        || (!superCall && Modifier.isFinal(modifiers))) {
+                    continue;
+                }
+                Class<?>[] params = host.getParameterTypes();
+                Class<?>[] bridgeParams = bridge.getParameterTypes();
+                if (params.length != bridgeParams.length) continue;
+                boolean matches = true;
+                for (int i = 0; i < params.length; i++) {
+                    matches &= bridgeType(params[i], base, actionBar, layout)
+                            .equals(DexMethodDescriptor.getTypeSig(bridgeParams[i]));
+                }
+                // A void super bridge may discard a host return value (Telegram 12.x finishFragment).
+                boolean returnMatches = superCall && bridge.getReturnType() == void.class
+                        || bridgeType(host.getReturnType(), base, actionBar, layout)
+                        .equals(DexMethodDescriptor.getTypeSig(bridge.getReturnType()));
+                if (matches && returnMatches) return host;
+            }
+        }
+        return null;
     }
 
     private static ArrayList<ImmutableMethod> generateProxyClassConstructor(String hostBaseFragmentTypeSig) {
@@ -190,7 +190,7 @@ public class ProxyFragmentImplDexCreator {
     }
 
     private static ImmutableMethod generateProxySuperStubMethod(String hostBaseFragmentTypeSig, DexMethodDescriptor targetMethodDescriptor,
-                                                                Class<?> kActionBar, Class<?> kActionBarLayout) {
+                                                                DexMethodDescriptor bridgeMethodDescriptor, Class<?> kActionBar, Class<?> kActionBarLayout) {
         String methodName = targetMethodDescriptor.name;
         String generatedMethodName = methodName + "$super";
         List<String> parameterTypeList = targetMethodDescriptor.getParameterTypes();
@@ -198,12 +198,7 @@ public class ProxyFragmentImplDexCreator {
         String returnType = targetMethodDescriptor.getReturnType();
         int parameterCount = parameterTypeList.size();
         // replace host obfuscated class name with ViewGroup or Object
-        String returnTypeMitigated = returnType.replace(DexMethodDescriptor.getTypeSig(kActionBar), VIEW_GROUP_TYPE)
-                .replace(DexMethodDescriptor.getTypeSig(kActionBarLayout), VIEW_GROUP_TYPE)
-                .replace(hostBaseFragmentTypeSig, OBJECT_TYPE);
-        String parameterTypeSigMitigated = parameterTypeSig.replace(DexMethodDescriptor.getTypeSig(kActionBar), VIEW_GROUP_TYPE)
-                .replace(DexMethodDescriptor.getTypeSig(kActionBarLayout), VIEW_GROUP_TYPE)
-                .replace(hostBaseFragmentTypeSig, OBJECT_TYPE);
+        String returnTypeMitigated = bridgeMethodDescriptor.getReturnType();
         List<String> parameterTypeListMitigated = new ArrayList<>();
         for (String parameterType : parameterTypeList) {
             parameterTypeListMitigated.add(parameterType.replace(DexMethodDescriptor.getTypeSig(kActionBar), VIEW_GROUP_TYPE)
@@ -238,7 +233,7 @@ public class ProxyFragmentImplDexCreator {
         }
         insSuperStub.add(new ImmutableInstruction35c(Opcode.INVOKE_SUPER, parameterCount + 1, 0, 1, 2, 3, 4,
                 referenceMethod(hostBaseFragmentTypeSig, methodName, parameterTypeSig)));
-        if (returnType.equals("V")) {
+        if (returnTypeMitigated.equals("V")) {
             insSuperStub.add(new ImmutableInstruction10x(Opcode.RETURN_VOID));
         } else if (returnType.startsWith("L") || returnType.startsWith("[")) {
             insSuperStub.add(new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 0));
@@ -304,12 +299,12 @@ public class ProxyFragmentImplDexCreator {
             insStub.add(new ImmutableInstruction10x(Opcode.RETURN_VOID));
         } else if (returnTypeMitigated.startsWith("L") || returnTypeMitigated.startsWith("[")) {
             insStub.add(new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 0));
-            insStub.add(new ImmutableInstruction11x(Opcode.RETURN_OBJECT, 0));
             // check cast if the return type is mitigated, make ART verifier happy
             // result object is in v0
             if (!returnTypeMitigated.equals(returnType)) {
                 insStub.add(new ImmutableInstruction21c(Opcode.CHECK_CAST, 0, new ImmutableTypeReference(returnType)));
             }
+            insStub.add(new ImmutableInstruction11x(Opcode.RETURN_OBJECT, 0));
         } else {
             insStub.add(new ImmutableInstruction11x(Opcode.MOVE_RESULT, 0));
             insStub.add(new ImmutableInstruction11x(Opcode.RETURN, 0));

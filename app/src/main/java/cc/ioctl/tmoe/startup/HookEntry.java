@@ -51,11 +51,14 @@ public class HookEntry implements IXposedHookLoadPackage, IXposedHookZygoteInit 
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+        initializeForPackage(lpparam.packageName, lpparam.classLoader);
+    }
+
+    static void initializeForPackage(String packageName, ClassLoader classLoader) {
         if (R.string.res_inject_success >>> 24 == 0x7f) {
             XposedBridge.log("package id must NOT be 0x7f, reject loading...");
             return;
         }
-        String packageName = lpparam.packageName;
         // check LSPosed dex-obfuscation
         Class<?> kXposedBridge = XposedBridge.class;
         if (!"de.robv.android.xposed.XposedBridge".equals(kXposedBridge.getName())) {
@@ -64,8 +67,9 @@ public class HookEntry implements IXposedHookLoadPackage, IXposedHookZygoteInit 
             HybridClassLoader.setObfuscatedXposedApiPackage(pkgName);
         }
         if (TELEGRAM_CLIENT_PACKAGE_NAME_LIST.contains(packageName)) {
-            StartupHook.INSTANCE.doInit(lpparam.classLoader);
-            EzXHelperInit.INSTANCE.initHandleLoadPackage(lpparam);
+            EzXHelperInit.INSTANCE.setEzClassLoader(classLoader);
+            EzXHelperInit.INSTANCE.setHostPackageName(packageName);
+            StartupHook.INSTANCE.doInit(classLoader);
             EzXHelperInit.INSTANCE.setLogTag("TMoe");
         }
     }
@@ -74,6 +78,10 @@ public class HookEntry implements IXposedHookLoadPackage, IXposedHookZygoteInit 
     public void initZygote(StartupParam startupParam) {
         EzXHelperInit.INSTANCE.initZygote(startupParam);
         sModulePath = startupParam.modulePath;
+    }
+
+    static void setModulePath(String modulePath) {
+        sModulePath = java.util.Objects.requireNonNull(modulePath);
     }
 
     public static String getModulePath() {

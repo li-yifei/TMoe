@@ -111,12 +111,14 @@ jobs:
         run: |
           ESCAPED=`python3 -c 'import json,os,urllib.parse; msg = json.dumps(os.environ["COMMIT_MESSAGE"]); print(urllib.parse.quote(msg if len(msg) <= 1024 else json.dumps(os.environ["COMMIT_URL"])))'`
           find .
-          export universal=$(find artifacts -name "*.apk")
+          export universal=$(find artifacts -name "app-modern-release.apk" -print -quit)
+          export legacy=$(find artifacts -name "app-legacy-release.apk" -print -quit)
+          test -f "$universal" && test -f "$legacy"
           echo "universal=$universal"
           chmod +x telegram-bot-api-binary
           ./telegram-bot-api-binary --api-id=21724 --api-hash=3e0cb5efcd52300aec5994fdfc5bdc16 --local 2>&1 > /dev/null &
-          curl -v "http://127.0.0.1:8081/bot${{ secrets.TELEGRAM_TOKEN  }}/sendMediaGroup?chat_id=-${{ vars.TG_CI_UPLOAD_TARGET_CHANNEL }}&message_thread_id=${{ vars.TG_CI_UPLOAD_TARGET_REPLY_ID }}&media=%5B%7B%22type%22%3A%22document%22%2C%20%22media%22%3A%22attach%3A%2F%2Funiversal%22%2C%22parse_mode%22%3A%22MarkdownV2%22%2C%22caption%22:${ESCAPED}%7D%5D" \
-           -F universal="@$universal"
+          curl -v "http://127.0.0.1:8081/bot${{ secrets.TELEGRAM_TOKEN  }}/sendMediaGroup?chat_id=-${{ vars.TG_CI_UPLOAD_TARGET_CHANNEL }}&message_thread_id=${{ vars.TG_CI_UPLOAD_TARGET_REPLY_ID }}&media=%5B%7B%22type%22%3A%22document%22%2C%20%22media%22%3A%22attach%3A%2F%2Funiversal%22%2C%22parse_mode%22%3A%22MarkdownV2%22%2C%22caption%22:${ESCAPED}%7D%2C%7B%22type%22%3A%22document%22%2C%22media%22%3A%22attach%3A%2F%2Flegacy%22%7D%5D" \
+           -F universal="@$universal" -F legacy="@$legacy"
           pkill telegram-bot
 
   telegram-bot-api:

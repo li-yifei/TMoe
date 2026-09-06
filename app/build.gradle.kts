@@ -45,6 +45,17 @@ android {
         }
     }
 
+    flavorDimensions += "xposedApi"
+    productFlavors {
+        create("legacy") {
+            dimension = "xposedApi"
+        }
+        create("modern") {
+            dimension = "xposedApi"
+            minSdk = 26
+        }
+    }
+
     buildTypes {
         release {
             isShrinkResources = false
@@ -103,13 +114,8 @@ tasks.withType<KotlinCompile>().configureEach {
     }
 }
 
-kotlin {
-    sourceSets.configureEach {
-        kotlin.srcDir("$buildDir/generated/ksp/$name/kotlin/")
-    }
-}
-
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     ksp(projects.libs.ksp)
     implementation(libs.mmkv.static)
     implementation(libs.core)
@@ -119,6 +125,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.ezxhelper)
+    "modernCompileOnly"("io.github.libxposed:api:101.0.1")
     compileOnly(libs.xposed)
     compileOnly(libs.javax.annotation)
 }

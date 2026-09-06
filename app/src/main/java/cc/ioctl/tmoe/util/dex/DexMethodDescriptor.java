@@ -72,7 +72,7 @@ public class DexMethodDescriptor implements Serializable, Cloneable {
             if (c == 'L') {
                 int j = s.indexOf(';', i);
                 list.add(s.substring(i, j + 1));
-                i = j + 1;
+                i = j;
             } else if (c == '[') {
                 int j = i;
                 while (s.charAt(j) == '[') {
@@ -82,7 +82,7 @@ public class DexMethodDescriptor implements Serializable, Cloneable {
                     j = s.indexOf(';', j);
                 }
                 list.add(s.substring(i, j + 1));
-                i = j + 1;
+                i = j;
             } else {
                 list.add(String.valueOf(c));
             }
