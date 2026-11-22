@@ -15,6 +15,10 @@ object AddInfoContainer : CommonDynamicHook() {
 
     //非管理员也可查看一些信息。。。
     override fun initOnce(): Boolean = tryOrLogFalse {
+        if (OptimizedProfileMenu.needsCompatibility()) {
+            OptimizedInfoContainer.install(this)
+            return@tryOrLogFalse
+        }
         val ProfileActivity = loadClass("org.telegram.ui.ProfileActivity")
         findMethod(ProfileActivity) {
             name == "createActionBarMenu" && parameterTypes.size == 1

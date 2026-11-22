@@ -27,6 +27,10 @@ import java.util.concurrent.ConcurrentHashMap
 object HistoricalNewsOption : CommonDynamicHook() {
     var chatActivity: Any? = null
     override fun initOnce(): Boolean = tryOrLogFalse {
+        if (loadClassOrNull("org.telegram.ui.ChatActivity") == null) {
+            OptimizedHistoricalMessageMenu.install { isEnabled }
+            return@tryOrLogFalse
+        }
 
         try {
 

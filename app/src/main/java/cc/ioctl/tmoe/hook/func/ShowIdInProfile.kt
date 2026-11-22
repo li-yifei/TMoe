@@ -19,6 +19,10 @@ object ShowIdInProfile : CommonDynamicHook(), ProfileActivityRowHook.Callback {
     private val rowName = "SHOW_ID_IN_PROFILE"
 
     override fun initOnce(): Boolean {
+        if (OptimizedProfileMenu.needsCompatibility()) {
+            OptimizedProfileMenu.install(this, true)
+            return true
+        }
         ProfileActivityRowHook.addCallback(this)
         return true
     }

@@ -11,6 +11,10 @@ import com.github.kyuubiran.ezxhelper.utils.*
 @FunctionHookEntry
 object AddSubItemChannel : CommonDynamicHook() {
     override fun initOnce(): Boolean = tryOrLogFalse {
+        if (OptimizedProfileMenu.needsCompatibility()) {
+            OptimizedProfileMenu.install(this, false)
+            return@tryOrLogFalse
+        }
         //打开频道
         val msg_channel = findField("org.telegram.messenger.R\$drawable") { name == "msg_channel" }.get(null) as Int
         val view_discussion = 22

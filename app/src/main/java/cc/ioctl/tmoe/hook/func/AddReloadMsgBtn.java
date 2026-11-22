@@ -43,6 +43,10 @@ public class AddReloadMsgBtn extends CommonDynamicHook {
 
     @Override
     public boolean initOnce() throws Exception {
+        if (Initiator.load("org.telegram.ui.ChatActivity") == null) {
+            OptimizedReloadMessages.install(this);
+            return true;
+        }
         Class<?> kChatActivity = Initiator.loadClass("org.telegram.ui.ChatActivity");
         Field fHeaderItem = kChatActivity.getDeclaredField("headerItem");
         fHeaderItem.setAccessible(true);
