@@ -23,11 +23,14 @@ public class DynamicHookInit {
     private static void initializeCoreHooks() {
         Initializable[] coreHooks = new Initializable[]{
                 InvalidationHook.INSTANCE,
-                ProfileActivityRowHook.INSTANCE,
                 SettingEntryHook.INSTANCE,
+                ProfileActivityRowHook.INSTANCE,
                 HideUserAvatar.INSTANCE
         };
         for (Initializable hook : coreHooks) {
+            if (hook == ProfileActivityRowHook.INSTANCE && SettingEntryHook.hasOptimizedSettingsActivityEntry()) {
+                continue;
+            }
             try {
                 if (!hook.initialize()) {
                     Utils.loge("initialize failed: " + hook.getClass().getName());

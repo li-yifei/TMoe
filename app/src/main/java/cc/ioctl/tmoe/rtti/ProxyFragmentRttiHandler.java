@@ -162,6 +162,15 @@ public class ProxyFragmentRttiHandler {
         return (ViewGroup) Reflex.getInstanceObjectOrNull(fragment, "parentLayout");
     }
 
+    public static void staticPresentFragmentFrom(Object parent, BaseProxyFragment fragment) {
+        try {
+            sHostBaseFragmentClass.getMethod("presentFragment", sHostBaseFragmentClass)
+                    .invoke(parent, fragment.getProxyObject());
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Unable to present TMoe settings", e);
+        }
+    }
+
     public static boolean staticPresentFragment(@NonNull ViewGroup parentLayout, @NonNull Object fragment, boolean removeLast) {
         return staticPresentFragment(parentLayout, fragment, removeLast, false, true, false, null);
     }

@@ -26,6 +26,9 @@ import java.util.HashMap;
 import java.util.Random;
 
 import cc.ioctl.tmoe.rtti.deobf.ClassLocator;
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex;
+import cc.ioctl.tmoe.rtti.deobf.ThemeDexResolver;
+import cc.ioctl.tmoe.util.Initiator;
 import cc.ioctl.tmoe.util.Utils;
 
 public class Theme {
@@ -201,8 +204,33 @@ public class Theme {
     private static Method sThemeGetColorI3 = null;
 
     private static final HashMap<String, Integer> sCachedColorKeyIndex = new HashMap<>();
+    private static boolean sOptimizedThemeChecked;
+    private static Method sOptimizedKeyIndex;
+    private static Method sOptimizedColor;
 
     public static int getColor(String key, boolean[] isDefault, boolean ignoreAnimation) {
+        if (!sOptimizedThemeChecked) {
+            sOptimizedThemeChecked = true;
+            if (Initiator.load("org.telegram.ui.ActionBar.Theme") == null) {
+                try {
+                    ThemeDexResolver.Symbols symbols = ThemeDexResolver.resolve(HostDexIndex.get());
+                    sOptimizedKeyIndex = HostDexIndex.resolve(symbols.keyIndex);
+                    sOptimizedColor = HostDexIndex.resolve(symbols.color);
+                    sOptimizedKeyIndex.setAccessible(true);
+                    sOptimizedColor.setAccessible(true);
+                } catch (Exception e) {
+                    Utils.loge(e);
+                }
+            }
+        }
+        if (sOptimizedColor != null) {
+            try {
+                int index = (Integer) sOptimizedKeyIndex.invoke(null, key);
+                if (index >= 0) return (Integer) sOptimizedColor.invoke(null, index, null);
+            } catch (ReflectiveOperationException e) {
+                Utils.loge(e);
+            }
+        }
         final Class<?> kTheme = ClassLocator.getThemeClass();
         if (sThemeGetColor3 == null && kTheme != null) {
             // find method public static int *(String, boolean[], boolean)

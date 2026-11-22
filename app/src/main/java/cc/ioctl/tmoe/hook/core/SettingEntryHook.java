@@ -1,17 +1,20 @@
 package cc.ioctl.tmoe.hook.core;
 
-import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 
 import cc.ioctl.tmoe.R;
 import cc.ioctl.tmoe.fragment.SettingsFragment;
 import cc.ioctl.tmoe.lifecycle.Parasitics;
 import cc.ioctl.tmoe.rtti.ProxyFragmentRttiHandler;
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex;
+import cc.ioctl.tmoe.rtti.deobf.SettingsDexResolver;
 import cc.ioctl.tmoe.ui.LocaleController;
 import cc.ioctl.tmoe.util.HostInfo;
 import cc.ioctl.tmoe.util.Initiator;
@@ -33,6 +36,7 @@ public class SettingEntryHook implements Initializable, ProfileActivityRowHook.C
     private static final int SETTINGS_ACTIVITY_ICON_COLOR_BOTTOM = 0xFF8C57E8;
     private static Method sSettingsCellFactoryMethod = null;
     private static boolean sSettingsActivityHooked = false;
+    private static Field sSettingsItemId;
 
     private boolean mInitialized = false;
 
@@ -41,17 +45,16 @@ public class SettingEntryHook implements Initializable, ProfileActivityRowHook.C
         if (mInitialized) {
             return true;
         }
+        if (!hookSettingsActivityEntry()) {
+            return false;
+        }
         ProfileActivityRowHook.addCallback(this);
-        hookSettingsActivityEntry();
         mInitialized = true;
         return true;
     }
 
     private static void presentTMoeSettingsFragment(@NonNull Object parentFragment) {
-        ViewGroup parentLayout = ProxyFragmentRttiHandler.staticGetParentLayout(parentFragment);
-        if (parentLayout != null) {
-            ProxyFragmentRttiHandler.staticPresentFragment(parentLayout, new SettingsFragment(), false);
-        }
+        ProxyFragmentRttiHandler.staticPresentFragmentFrom(parentFragment, new SettingsFragment());
     }
 
     @Override
@@ -113,20 +116,22 @@ public class SettingEntryHook implements Initializable, ProfileActivityRowHook.C
         manipulator.insertRowAtPosition(TMOE_SETTINGS_ROW, targetRow);
     }
 
-    private static void hookSettingsActivityEntry() {
+    private static boolean hookSettingsActivityEntry() {
         if (sSettingsActivityHooked) {
-            return;
+            return true;
         }
         try {
             Class<?> kSettingsActivity = Initiator.load("org.telegram.ui.SettingsActivity");
             if (kSettingsActivity == null) {
-                // old versions do not have SettingsActivity, keep legacy ProfileActivity hook only
-                return;
+                // Legacy hosts predate this screen. Optimized hosts retain ActionBarLayout,
+                // while SettingsActivity and its private callbacks have been renamed.
+                if (Initiator.load("org.telegram.ui.ChatActivity") == null) hookOptimizedSettings();
+                return true;
             }
             Class<?> kSettingCellFactory = Initiator.load("org.telegram.ui.SettingsActivity$SettingCell$Factory");
             if (kSettingCellFactory == null) {
                 Utils.loge("unable to find SettingsActivity$SettingCell$Factory");
-                return;
+                return false;
             }
             sSettingsCellFactoryMethod = kSettingCellFactory.getDeclaredMethod(
                     "of",
@@ -148,45 +153,75 @@ public class SettingEntryHook implements Initializable, ProfileActivityRowHook.C
             }
             if (fillItems == null || onClick == null) {
                 Utils.loge("unable to find SettingsActivity#fillItems or #onClick");
-                return;
+                return false;
             }
 
-            XposedBridge.hookMethod(fillItems, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    if (!(param.args[0] instanceof ArrayList)) {
-                        return;
-                    }
-                    @SuppressWarnings("unchecked")
-                    ArrayList<Object> items = (ArrayList<Object>) param.args[0];
-                    if (items.isEmpty()) {
-                        return;
-                    }
-                    int insertAt = findSettingsActivityLanguageItemIndex(items);
-                    if (insertAt < 0 || containsSettingsActivityItem(items, TMOE_SETTINGS_ITEM_ID)) {
-                        return;
-                    }
-                    Object item = createSettingsActivityItem();
-                    if (item != null) {
-                        items.add(insertAt, item);
-                    }
-                }
-            });
+            installSettingsHooks(fillItems, onClick, 0, 0);
+            return true;
+        } catch (Throwable e) {
+            Utils.loge(e);
+            return false;
+        }
+    }
 
+    private static void hookOptimizedSettings() throws Exception {
+        SettingsDexResolver.Symbols symbols = SettingsDexResolver.resolve(HostDexIndex.get());
+        sSettingsCellFactoryMethod = HostDexIndex.resolve(symbols.factory);
+        sSettingsCellFactoryMethod.setAccessible(true);
+        sSettingsItemId = sSettingsCellFactoryMethod.getReturnType().getDeclaredField(symbols.itemId.getName());
+        sSettingsItemId.setAccessible(true);
+        Method fill = HostDexIndex.resolve(symbols.fillItems);
+        Method click = HostDexIndex.resolve(symbols.onClick);
+        int listIndex = symbols.fillItems.getParameterTypes().indexOf("Ljava/util/ArrayList;");
+        int itemIndex = symbols.onClick.getParameterTypes().indexOf(symbols.factory.getReturnType());
+        installSettingsHooks(fill, click, listIndex, itemIndex);
+        Utils.logd("Resolved optimized settings: " + symbols.fillItems + "; " + symbols.onClick);
+    }
+
+    public static boolean hasOptimizedSettingsActivityEntry() {
+        return sSettingsActivityHooked && sSettingsItemId != null;
+    }
+
+    private static void installSettingsHooks(Method fillItems, Method onClick, int listIndex, int itemIndex) {
+        XC_MethodHook.Unhook fillHook = XposedBridge.hookMethod(fillItems, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (!(param.args[listIndex] instanceof ArrayList)) {
+                    return;
+                }
+                @SuppressWarnings("unchecked")
+                ArrayList<Object> items = (ArrayList<Object>) param.args[listIndex];
+                if (items.isEmpty()) {
+                    return;
+                }
+                int insertAt = findSettingsActivityLanguageItemIndex(items);
+                if (insertAt < 0 || containsSettingsActivityItem(items, TMOE_SETTINGS_ITEM_ID)) {
+                    return;
+                }
+                Object item = createSettingsActivityItem();
+                if (item != null) {
+                    items.add(insertAt, item);
+                }
+            }
+        });
+
+        try {
             XposedBridge.hookMethod(onClick, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    Object item = param.args[0];
+                    Object item = param.args[itemIndex];
                     if (getSettingsActivityItemId(item) == TMOE_SETTINGS_ITEM_ID) {
-                        presentTMoeSettingsFragment(param.thisObject);
+                        Object parent = Modifier.isStatic(onClick.getModifiers()) ? param.args[0] : param.thisObject;
+                        presentTMoeSettingsFragment(parent);
                         param.setResult(null);
                     }
                 }
             });
-            sSettingsActivityHooked = true;
-        } catch (Throwable e) {
-            Utils.loge(e);
+        } catch (Throwable error) {
+            fillHook.unhook();
+            throw error;
         }
+        sSettingsActivityHooked = true;
     }
 
     private static Object createSettingsActivityItem() {
@@ -231,6 +266,13 @@ public class SettingEntryHook implements Initializable, ProfileActivityRowHook.C
     }
 
     private static int getSettingsActivityItemId(Object item) {
+        if (item != null && sSettingsItemId != null) {
+            try {
+                return sSettingsItemId.getInt(item);
+            } catch (IllegalAccessException e) {
+                throw new IllegalStateException(e);
+            }
+        }
         Object id = item == null ? null : Reflex.getInstanceObjectOrNull(item, "id");
         return id instanceof Number ? ((Number) id).intValue() : Integer.MIN_VALUE;
     }
