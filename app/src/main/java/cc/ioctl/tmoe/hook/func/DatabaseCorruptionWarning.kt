@@ -67,7 +67,9 @@ object DatabaseCorruptionWarning : CommonDynamicHook() {
         val ctorSQLitePreparedStatement = kSQLitePreparedStatement.getDeclaredConstructor(
             kSQLiteDatabase, String::class.java
         )
-        val kChatActivity = Initiator.loadClass("org.telegram.ui.ChatActivity")
+        val kChatActivity = Initiator.load("org.telegram.ui.ChatActivity")
+            ?: Initiator.loadClass(cc.ioctl.tmoe.rtti.deobf.AccountAccessSymbols.chatClass(
+                cc.ioctl.tmoe.rtti.deobf.HostDexIndex.get()))
         val createView = kChatActivity.getDeclaredMethod("createView", Context::class.java)
         HookUtils.hookAfterAlways(this, ctorSQLiteDatabase) { param ->
             val db = kSQLiteDatabase.cast(param.thisObject)!!

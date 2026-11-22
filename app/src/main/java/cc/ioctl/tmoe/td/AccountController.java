@@ -1,8 +1,13 @@
 package cc.ioctl.tmoe.td;
 
-import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.io.IOException;
+import java.util.List;
 
-import cc.ioctl.tmoe.rtti.deobf.ClassLocator;
+import cc.ioctl.tmoe.rtti.deobf.AccountAccessSymbols;
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex;
+import cc.ioctl.tmoe.util.Initiator;
 import cc.ioctl.tmoe.util.Utils;
 
 /**
@@ -26,18 +31,10 @@ public class AccountController {
         if (slot < 0 || slot > 32767) {
             throw new IllegalArgumentException("invalid slot: " + slot);
         }
-        Class<?> kUserConfig = ClassLocator.getUserConfigClass();
-        if (kUserConfig == null) {
-            Utils.loge("getUserIdForSlot but UserConfig.class is null");
-            return 0;
-        }
         try {
-            Object userConfig = kUserConfig.getMethod("getInstance", int.class).invoke(null, slot);
-            return kUserConfig.getField("clientUserId").getLong(userConfig);
-        } catch (IllegalAccessException e) {
-            // should not happen
-            throw new LinkageError("unable to access UserConfig.getInstance(I).clientUserId", e);
-        } catch (NoSuchMethodException | NoSuchFieldException | InvocationTargetException e) {
+            ConfigAccess access = config();
+            return access.userId.getLong(access.instance.invoke(null, slot));
+        } catch (ReflectiveOperationException | IOException | IllegalStateException e) {
             Utils.loge(e);
         }
         return 0;
@@ -52,17 +49,9 @@ public class AccountController {
      * @see #getUserIdForSlot(int)
      */
     public static int getCurrentActiveSlot() {
-        Class<?> kUserConfig = ClassLocator.getUserConfigClass();
-        if (kUserConfig == null) {
-            Utils.loge("getCurrentActiveSlot but UserConfig.class is null");
-            return -1;
-        }
         try {
-            return kUserConfig.getDeclaredField("selectedAccount").getInt(null);
-        } catch (IllegalAccessException e) {
-            // should not happen
-            throw new LinkageError("unable to access UserConfig.selectedAccount", e);
-        } catch (NoSuchFieldException e) {
+            return config().selected.getInt(null);
+        } catch (ReflectiveOperationException | IOException | IllegalStateException e) {
             Utils.loge(e);
         }
         return -1;
@@ -90,6 +79,73 @@ public class AccountController {
      */
     public static boolean isCurrentUserLoggedIn() {
         return getCurrentActiveUserId() != 0;
+    }
+
+    private static ConfigAccess configAccess;
+    private static Method[] messageAccess;
+
+    private static final class ConfigAccess {
+        final Method instance;
+        final Field selected, userId;
+
+        ConfigAccess(Method instance, Field selected, Field userId) {
+            this.instance = instance;
+            this.selected = selected;
+            this.userId = userId;
+            instance.setAccessible(true);
+            selected.setAccessible(true);
+            userId.setAccessible(true);
+        }
+    }
+
+    private static synchronized ConfigAccess config() throws ReflectiveOperationException, IOException {
+        if (configAccess != null) return configAccess;
+        try {
+            Class<?> cls = Initiator.loadClass("org.telegram.messenger.UserConfig");
+            configAccess = new ConfigAccess(cls.getDeclaredMethod("getInstance", int.class),
+                    cls.getDeclaredField("selectedAccount"), cls.getDeclaredField("clientUserId"));
+        } catch (ClassNotFoundException | NoSuchMethodException | NoSuchFieldException e) {
+            AccountAccessSymbols.Config symbols = AccountAccessSymbols.config(HostDexIndex.get());
+            Method instance = HostDexIndex.resolve(symbols.instance);
+            Class<?> cls = instance.getDeclaringClass();
+            configAccess = new ConfigAccess(instance,
+                    cls.getDeclaredField(symbols.selectedAccount.getName()),
+                    cls.getDeclaredField(symbols.clientUserId.getName()));
+        }
+        return configAccess;
+    }
+
+    private static synchronized Method[] messages() throws ReflectiveOperationException, IOException {
+        if (messageAccess != null) return messageAccess;
+        Method[] resolved;
+        try {
+            Class<?> cls = Initiator.loadClass("org.telegram.messenger.MessagesController");
+            resolved = new Method[] {cls.getDeclaredMethod("getInstance", int.class),
+                    cls.getDeclaredMethod("getChat", Long.class), cls.getDeclaredMethod("getUser", Long.class),
+                    cls.getDeclaredMethod("getInputChannel", long.class)};
+        } catch (ClassNotFoundException | NoSuchMethodException e) {
+            List<org.jf.dexlib2.iface.Method> symbols = AccountAccessSymbols.messages(HostDexIndex.get());
+            resolved = new Method[symbols.size()];
+            for (int i = 0; i < resolved.length; i++) resolved[i] = HostDexIndex.resolve(symbols.get(i));
+        }
+        for (Method method : resolved) method.setAccessible(true);
+        messageAccess = resolved;
+        return resolved;
+    }
+
+    public static Object getCachedChat(int slot, long id) throws ReflectiveOperationException, IOException {
+        Method[] access = messages();
+        return access[1].invoke(access[0].invoke(null, slot), id);
+    }
+
+    public static Object getCachedUser(int slot, long id) throws ReflectiveOperationException, IOException {
+        Method[] access = messages();
+        return access[2].invoke(access[0].invoke(null, slot), id);
+    }
+
+    public static Object getInputChannel(int slot, long id) throws ReflectiveOperationException, IOException {
+        Method[] access = messages();
+        return access[3].invoke(access[0].invoke(null, slot), id);
     }
 
     public static class NoUserLoginException extends Exception {
