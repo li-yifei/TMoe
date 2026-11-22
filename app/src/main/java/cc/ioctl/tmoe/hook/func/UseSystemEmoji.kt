@@ -8,6 +8,8 @@ import android.graphics.drawable.Drawable
 import android.text.TextPaint
 import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
+import cc.ioctl.tmoe.rtti.deobf.EmojiChannelResolver
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
 import com.github.kyuubiran.ezxhelper.utils.*
 import java.io.BufferedReader
 import java.io.File
@@ -23,7 +25,16 @@ object UseSystemEmoji : CommonDynamicHook() {
     // https://github.com/PreviousAlone/Nnngram/blob/main/TMessagesProj/src/main/java/org/telegram/messenger/Emoji.java#L297
     override fun initOnce(): Boolean = tryOrLogFalse {
 
-        val emoji = loadClass("org.telegram.messenger.Emoji")
+        val emoji = loadClassOrNull("org.telegram.messenger.Emoji")
+        if (emoji == null) {
+            val replacement = EmojiChannelResolver.systemEmojiReplacement(HostDexIndex.get())
+            HostDexIndex.resolve(replacement).hookBefore {
+                // This is Telegram's own SharedConfig.useSystemEmoji branch: preserve the
+                // input text and let Android's font renderer handle standard Unicode emoji.
+                if (isEnabled) it.result = it.args[0]
+            }
+            return@tryOrLogFalse
+        }
         val fixEmojiM = emoji.method(
             "fixEmoji",
             String::class.java,
