@@ -5,18 +5,26 @@ import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
 import cc.ioctl.tmoe.util.HookUtils
 import cc.ioctl.tmoe.util.Initiator
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
+import cc.ioctl.tmoe.rtti.deobf.InteractionHookSymbols
 
 @FunctionHookEntry
 object ViewTopicAsMsgByDefault : CommonDynamicHook() {
 
     override fun initOnce(): Boolean {
-        val kDialogsActivity = Initiator.loadClass("org.telegram.ui.DialogsActivity")
-        val kBaseFragment = Initiator.loadClass("org.telegram.ui.ActionBar.BaseFragment")
-        val kTopicsFragment = Initiator.loadClass("org.telegram.ui.TopicsFragment")
-        val kChatActivity = Initiator.loadClass("org.telegram.ui.ChatActivity")
-        val getArguments_BaseFragment = kBaseFragment.getDeclaredMethod("getArguments")
-        val presentFragment_DialogsActivity = kDialogsActivity.getDeclaredMethod("presentFragment", kBaseFragment)
-        val isTopic_ChatActivity = kChatActivity.getDeclaredField("isTopic").apply {
+        val symbols = if (Initiator.load("org.telegram.ui.DialogsActivity") == null ||
+            Initiator.load("org.telegram.ui.TopicsFragment") == null ||
+            Initiator.load("org.telegram.ui.ChatActivity") == null) {
+            InteractionHookSymbols.topics(HostDexIndex.get())
+        } else null
+        val kTopicsFragment = Initiator.loadClass(symbols?.topicsClass ?: "org.telegram.ui.TopicsFragment")
+        val kChatActivity = Initiator.loadClass(symbols?.chatClass ?: "org.telegram.ui.ChatActivity")
+        val getArguments_BaseFragment = kTopicsFragment.getMethod("getArguments")
+        val presentFragment_DialogsActivity = symbols?.let { HostDexIndex.resolve(it.present) } ?:
+            Initiator.loadClass("org.telegram.ui.DialogsActivity").declaredMethods.single {
+                it.name == "presentFragment" && it.parameterTypes.size == 1
+            }
+        val isTopic_ChatActivity = kChatActivity.getDeclaredField(symbols?.isTopic?.name ?: "isTopic").apply {
             isAccessible = true
         }
         HookUtils.hookBeforeIfEnabled(this, presentFragment_DialogsActivity) { param ->

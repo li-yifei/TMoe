@@ -1,14 +1,14 @@
 package cc.ioctl.tmoe.hook.func
 
 import android.app.AlertDialog
-import android.content.Context
 import android.content.DialogInterface
+import android.view.View
 import cc.ioctl.tmoe.R
 import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
-import cc.ioctl.tmoe.hook.func.HistoricalNewsOption.getMethodAndInvoke
 import cc.ioctl.tmoe.lifecycle.Parasitics
-import com.github.kyuubiran.ezxhelper.utils.findMethod
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
+import cc.ioctl.tmoe.rtti.deobf.InteractionHookSymbols
 import com.github.kyuubiran.ezxhelper.utils.hookBefore
 import com.github.kyuubiran.ezxhelper.utils.loadClass
 import com.github.kyuubiran.ezxhelper.utils.tryOrLogFalse
@@ -18,29 +18,29 @@ import de.robv.android.xposed.XposedBridge
 object SendCommand : CommonDynamicHook() {
 
     override fun initOnce(): Boolean = tryOrLogFalse {
-        findMethod(loadClass("org.telegram.ui.Components.ChatActivityEnterView")) {
-            //public void setCommand(MessageObject messageObject, String command, boolean longPress, boolean username)
-            name=="setCommand"&&parameterTypes.size==4
-        }.hookBefore {
+        val target = loadClass("org.telegram.ui.Components.ChatActivityEnterView").declaredMethods
+            .singleOrNull { it.name == "setCommand" && it.parameterTypes.size == 4 }
+            ?: HostDexIndex.resolve(InteractionHookSymbols.command(HostDexIndex.get()))
+        target.hookBefore {
             if (!isEnabled)return@hookBefore
 
             try {
 
-//            val messageObject =it.args[0]
             val command=it.args[1] as String
             val longPress=it.args[2] as Boolean
-//            val username=it.args[3] as Boolean
 
             if (longPress)return@hookBefore
 
 
-            val context = getMethodAndInvoke("getContext", it.thisObject, true, 0) as Context
+            val context = (it.thisObject as View).context
             if (command.startsWith("/")){
+                val receiver = it.thisObject
+                val arguments = it.args.clone()
                 Parasitics.injectModuleResources(context.resources)
                 AlertDialog.Builder(context)
                     .setMessage(R.string.Dialog_Message_ConfirmClickToSendBotCommand)
                     .setPositiveButton(android.R.string.ok) { _: DialogInterface?, _: Int ->
-                      XposedBridge.invokeOriginalMethod(it.method,it.thisObject,it.args)
+                      XposedBridge.invokeOriginalMethod(target, receiver, arguments)
                     }
                     .setNegativeButton(android.R.string.cancel, null)
                     .show()

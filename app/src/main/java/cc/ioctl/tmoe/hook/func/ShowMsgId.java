@@ -9,6 +9,9 @@ import cc.ioctl.tmoe.base.annotation.FunctionHookEntry;
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook;
 import cc.ioctl.tmoe.util.HookUtils;
 import cc.ioctl.tmoe.util.Initiator;
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex;
+import cc.ioctl.tmoe.rtti.deobf.MessageTimeSymbols;
+import org.jf.dexlib2.iface.reference.FieldReference;
 
 @FunctionHookEntry
 public class ShowMsgId extends CommonDynamicHook {
@@ -20,6 +23,13 @@ public class ShowMsgId extends CommonDynamicHook {
 
     @Override
     public boolean initOnce() throws Exception {
+        if (Initiator.load("org.telegram.ui.Cells.ChatMessageCell") == null) {
+            MessageTimeSymbols symbols = new MessageTimeSymbols(HostDexIndex.get());
+            install(HostDexIndex.resolve(symbols.measureTime), field(symbols.time),
+                    field(symbols.messageOwner), field(symbols.paint), field(symbols.textWidth),
+                    field(symbols.width));
+            return true;
+        }
         Class<?> kChatMessageCell = Initiator.loadClass("org.telegram.ui.Cells.ChatMessageCell");
         Method measureTime = kChatMessageCell.getDeclaredMethod("measureTime",
                 Initiator.loadClass("org.telegram.messenger.MessageObject"));
@@ -27,8 +37,6 @@ public class ShowMsgId extends CommonDynamicHook {
         currentTimeString.setAccessible(true);
         Field messageOwner = Initiator.loadClass("org.telegram.messenger.MessageObject").getDeclaredField("messageOwner");
         messageOwner.setAccessible(true);
-        Field msgId = Initiator.loadClass("org.telegram.tgnet.TLRPC$Message").getDeclaredField("id");
-        msgId.setAccessible(true);
         Class<?> kTheme = Initiator.loadClass("org.telegram.ui.ActionBar.Theme");
         Field chatTimePaint = kTheme.getDeclaredField("chat_timePaint");
         chatTimePaint.setAccessible(true);
@@ -36,13 +44,28 @@ public class ShowMsgId extends CommonDynamicHook {
         timeTextWidth.setAccessible(true);
         Field timeWidth = kChatMessageCell.getDeclaredField("timeWidth");
         timeWidth.setAccessible(true);
+        install(measureTime, currentTimeString, messageOwner, chatTimePaint, timeTextWidth, timeWidth);
+        return true;
+    }
+
+    private static Field field(FieldReference ref) throws ReflectiveOperationException {
+        Field field = Initiator.loadClass(ref.getDefiningClass()).getDeclaredField(ref.getName());
+        field.setAccessible(true);
+        return field;
+    }
+
+    private void install(Method measureTime, Field currentTimeString, Field messageOwner,
+                         Field chatTimePaint, Field timeTextWidth, Field timeWidth) throws Exception {
+        Field msgId = Initiator.loadClass("org.telegram.tgnet.TLRPC$Message").getDeclaredField("id");
+        msgId.setAccessible(true);
         HookUtils.hookAfterIfEnabled(this, measureTime, param -> {
             CharSequence time = (CharSequence) currentTimeString.get(param.thisObject);
+            if (time == null || param.args[0] == null) return;
             Object messageObject = param.args[0];
             Object owner = messageOwner.get(messageObject);
             int id = msgId.getInt(owner);
             String delta = id + " ";
-            time = delta + time;
+            time = android.text.TextUtils.concat(delta, time);
             currentTimeString.set(param.thisObject, time);
             TextPaint paint = (TextPaint) chatTimePaint.get(null);
             assert paint != null;
@@ -50,6 +73,5 @@ public class ShowMsgId extends CommonDynamicHook {
             timeTextWidth.setInt(param.thisObject, deltaWidth + timeTextWidth.getInt(param.thisObject));
             timeWidth.setInt(param.thisObject, deltaWidth + timeWidth.getInt(param.thisObject));
         });
-        return true;
     }
 }
