@@ -13,7 +13,19 @@ public class EnableDebugMode extends CommonDynamicHook {
     }
 
     @Override
+    public boolean isAvailable() {
+        Class<?> buildVars = Initiator.load("org.telegram.messenger.BuildVars");
+        if (buildVars == null) return false;
+        try {
+            return buildVars.getDeclaredField("DEBUG_VERSION").getType() == boolean.class;
+        } catch (NoSuchFieldException e) {
+            return false;
+        }
+    }
+
+    @Override
     public boolean initOnce() throws Exception {
+        if (!isAvailable()) return false;
         if (isEnabledByUser()) {
             updateValue(true);
         }
@@ -23,6 +35,7 @@ public class EnableDebugMode extends CommonDynamicHook {
     @Override
     public void setEnabledByUser(boolean enabled) {
         super.setEnabledByUser(enabled);
+        if (!isAvailable()) return;
         try {
             updateValue(enabled);
         } catch (NoSuchFieldException e) {
