@@ -2,12 +2,13 @@ package cc.ioctl.tmoe.hook.func
 
 import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
+import cc.ioctl.tmoe.rtti.deobf.MemberHistorySymbols
 import cc.ioctl.tmoe.td.AccountController
 import cc.ioctl.tmoe.td.RequestInterceptor
 import cc.ioctl.tmoe.util.HookUtils
 import cc.ioctl.tmoe.util.Initiator
 import cc.ioctl.tmoe.util.Log
-import cc.ioctl.tmoe.util.PrimTypes
 import cc.ioctl.tmoe.util.Reflex
 import java.lang.reflect.Field
 import kotlin.math.abs
@@ -56,43 +57,31 @@ object HistoricGroupMemberRecord : CommonDynamicHook() {
         val currentSlot = AccountController.getCurrentActiveSlot()
         check(currentSlot >= 0) { "AccountController.getCurrentActiveSlot fail" }
 
+        val namedLayout = Initiator.load("org.telegram.ui.Components.SharedMediaLayout")
+        val setCount: java.lang.reflect.Method
+        val dialogIdField: Field
+        if (namedLayout != null) {
+            setCount = namedLayout.getDeclaredMethod("setCommonGroupsCount", Integer.TYPE)
+            dialogIdField = namedLayout.getDeclaredField("dialog_id")
+        } else {
+            val symbols = MemberHistorySymbols.history(HostDexIndex.get())
+            setCount = HostDexIndex.resolve(symbols.setCount)
+            dialogIdField = setCount.declaringClass.getDeclaredField(symbols.dialogId.name)
+        }
+        dialogIdField.isAccessible = true
+        HookUtils.hookBeforeIfEnabled(this, setCount) { param ->
+            val dialogId = dialogIdField.getLong(param.thisObject)
+            if (dialogId > 0 && param.args[0] == 0
+                && DumpGroupMember.queryUserGroupDescriptors(dialogId).isNotEmpty()) {
+                // The host setter updates its media count and refreshes the common-groups tab.
+                param.args[0] = 1
+            }
+        }
         RequestInterceptor.registerTlrpcSuccessfulResultInterceptor(
-            Initiator.loadClass("org.telegram.tgnet.TLRPC\$TL_messages_getCommonChats")
+            kTL_messages_getCommonChats
         ) { req, resp ->
-            if (!isEnabled) {
-                return@registerTlrpcSuccessfulResultInterceptor null
-            }
-            handleRequestComplete(req, resp)
+            if (isEnabled) handleRequestComplete(req, resp)
             null
-        }
-
-        // handle cases that common_chats_count is 0 but local database is not empty
-        val kSharedMediaLayout = Initiator.loadClass("org.telegram.ui.Components.SharedMediaLayout");
-        val fSharedMediaLayout_dialog_id = Reflex.findField(kSharedMediaLayout, PrimTypes.LONG, "dialog_id").apply {
-            isAccessible = true
-        }
-        val updateTabs = kSharedMediaLayout.getDeclaredMethod("updateTabs", PrimTypes.BOOLEAN)
-        val hasMediaField = kSharedMediaLayout.getDeclaredField("hasMedia").apply {
-            isAccessible = true
-        }
-        HookUtils.hookBeforeIfEnabled(this, updateTabs) { param ->
-            val dialogId = fSharedMediaLayout_dialog_id.getLong(param.thisObject)
-            if (dialogId <= 0) {
-                return@hookBeforeIfEnabled
-            }
-            if (!Reflex.isCallingFromMethod("setCommonGroupsCount", 10)) {
-                return@hookBeforeIfEnabled
-            }
-            val hasMedia = hasMediaField.get(param.thisObject) as IntArray
-            val currentCount = hasMedia[6]
-            if (currentCount == 0) {
-                // query local database
-                val groupInfoList = DumpGroupMember.queryUserGroupDescriptors(dialogId)
-                if (groupInfoList.isNotEmpty()) {
-                    // 1 is enough for a TLRPC.TL_messages_getCommonChats request
-                    hasMedia[6] = 1
-                }
-            }
         }
         return true
     }

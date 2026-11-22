@@ -10,6 +10,8 @@ import cc.ioctl.tmoe.R
 import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
 import cc.ioctl.tmoe.lifecycle.Parasitics
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
+import cc.ioctl.tmoe.rtti.deobf.MemberAccessSymbols
 import cc.ioctl.tmoe.td.AccountController
 import cc.ioctl.tmoe.td.RequestInterceptor
 import cc.ioctl.tmoe.td.binding.Chat
@@ -80,6 +82,7 @@ object DumpGroupMember : CommonDynamicHook() {
     private lateinit var kmessages_Messages: Class<*>
     private lateinit var fmessages_Messages_messages: Field
     private lateinit var fmessages_Messages_users: Field
+    private lateinit var profileChatId: Field
     private lateinit var kMessage: Class<*>
     private lateinit var fMessage_from_id: Field
     private lateinit var fMessage_peer_id: Field
@@ -157,6 +160,31 @@ object DumpGroupMember : CommonDynamicHook() {
             throw RuntimeException("AccountController.getCurrentActiveSlot fail")
         }
 
+        // Resolve storage and UI symbols before registering callbacks.
+        val index by lazy { HostDexIndex.get() }
+        val putChatsInternal: Method = try {
+            val storage = Initiator.loadClass("org.telegram.messenger.MessagesStorage")
+            try {
+                storage.getDeclaredMethod("putChatsInternal", java.util.List::class.java)
+            } catch (e: NoSuchMethodException) {
+                storage.getDeclaredMethod("putChatsInternal", java.util.ArrayList::class.java)
+            }
+        } catch (e: ReflectiveOperationException) {
+            HostDexIndex.resolve(MemberAccessSymbols.putChats(index))
+        }
+        val profile = Initiator.loadClass("org.telegram.ui.ProfileActivity")
+        val onlineTextField = try {
+            profile.getDeclaredField("onlineTextView")
+        } catch (e: NoSuchFieldException) {
+            profile.getDeclaredField(MemberAccessSymbols.onlineText(index).name)
+        }.apply { isAccessible = true }
+        profileChatId = try {
+            profile.getDeclaredField("chatId")
+        } catch (e: NoSuchFieldException) {
+            profile.getDeclaredField(MemberAccessSymbols.profileChatId(index).name)
+        }.apply { isAccessible = true }
+        val createProfileView = profile.getDeclaredMethod("createView", Context::class.java)
+
         RequestInterceptor.registerTlrpcSuccessfulResultInterceptor(
             Initiator.loadClass("org.telegram.tgnet.TLRPC\$TL_channels_getParticipants"),
             Initiator.loadClass("org.telegram.tgnet.TLRPC\$TL_channels_getParticipant"),
@@ -170,27 +198,14 @@ object DumpGroupMember : CommonDynamicHook() {
             null
         }
 
-        val kMessagesStorage = Initiator.loadClass("org.telegram.messenger.MessagesStorage")
-        val putChatsInternal: Method = try {
-            kMessagesStorage.getDeclaredMethod("putChatsInternal", java.util.List::class.java)
-        } catch (e: NoSuchMethodException) {
-            kMessagesStorage.getDeclaredMethod("putChatsInternal", java.util.ArrayList::class.java)
-        }
         XposedBridge.hookMethod(putChatsInternal, mPutChatsInternalHook)
-        // add btn long click listener
-        val kProfileActivity = Initiator.loadClass("org.telegram.ui.ProfileActivity")
-        val fProfileActivity_onlineTextView = kProfileActivity.getDeclaredField("onlineTextView").apply {
-            isAccessible = true
-        }
-        kProfileActivity.getDeclaredMethod("createView", Context::class.java).let {
-            HookUtils.hookAfterIfEnabled(this, it) { params ->
-                val that = params.thisObject
-                val onlineTextView = fProfileActivity_onlineTextView.get(that) as Array<out View?>
-                val v0 = onlineTextView[0]
-                val v1 = onlineTextView[1]
-                val listener = OnOnlineCountTextViewLongListener(that)
-                v0?.setOnLongClickListener(listener)
-                v1?.setOnLongClickListener(listener)
+        HookUtils.hookAfterIfEnabled(this, createProfileView) { params ->
+            val that = params.thisObject
+            val text = onlineTextField.get(that)
+            val listener = OnOnlineCountTextViewLongListener(that)
+            when (text) {
+                is View -> text.setOnLongClickListener(listener)
+                is Array<*> -> text.filterIsInstance<View>().forEach { it.setOnLongClickListener(listener) }
             }
         }
         return true
@@ -346,11 +361,11 @@ object DumpGroupMember : CommonDynamicHook() {
     }
 
     private val mPutChatsInternalHook = HookUtils.beforeIfEnabled(this) { params ->
-        val chats = params.args[0] as ArrayList<*>?
+        val chats = params.args[0] as List<*>?
         val slot = AccountController.getCurrentActiveSlot()
         if (!chats.isNullOrEmpty()) {
             val chatInfoList = ArrayList<ChannelInfo>(chats.size)
-            chats.forEach { chatObj ->
+            chats.filterNotNull().forEach { chatObj ->
                 chatInfoList.add(channelInfoFromChat(chatObj))
             }
             updateChannelInfoList(slot, chatInfoList)
@@ -370,12 +385,7 @@ object DumpGroupMember : CommonDynamicHook() {
     @Throws(ReflectiveOperationException::class)
     private fun createTL_channels_getParticipants(acctSlot: Int, chatId: Long, offset: Int, filter: Any? = null): Any {
         check(acctSlot >= 0)
-        val accountInstance = Reflex.invokeStatic(
-            Initiator.loadClass("org.telegram.messenger.AccountInstance"),
-            "getInstance", acctSlot, Integer.TYPE
-        )!!
-        val messagesController = Reflex.invokeVirtual(accountInstance, "getMessagesController")!!
-        val inputChannel = Reflex.invokeVirtual(messagesController, "getInputChannel", chatId, java.lang.Long.TYPE)!!
+        val inputChannel = AccountController.getInputChannel(acctSlot, chatId)!!
         val obj = kTL_channels_getParticipants.getConstructor().newInstance()
         Reflex.setInstanceObject(obj, "channel", null, inputChannel)
         Reflex.setInstanceObject(obj, "offset", null, offset)
@@ -394,7 +404,7 @@ object DumpGroupMember : CommonDynamicHook() {
         try {
             val slot = AccountController.getCurrentActiveSlot()
             check(slot >= 0) { "invalid slot: $slot" }
-            val chatId = Reflex.getInstanceObject(fragment, "chatId", java.lang.Long.TYPE) as Long
+            val chatId = profileChatId.getLong(fragment)
             check(chatId != 0L) { "invalid chatId: $chatId" }
             val dialog = AlertDialog.Builder(ctx).apply {
                 setTitle("TLRPC")
@@ -404,11 +414,8 @@ object DumpGroupMember : CommonDynamicHook() {
                 }
             }.show()
             progressDialog = dialog
-            val accountInstance = Reflex.invokeStatic(
-                Initiator.loadClass("org.telegram.messenger.AccountInstance"),
-                "getInstance", slot, Integer.TYPE
-            )!!
-            val connMgr = Reflex.invokeVirtual(accountInstance, "getConnectionsManager")!!
+            val connMgr = Initiator.loadClass("org.telegram.tgnet.ConnectionsManager")
+                .getDeclaredMethod("getInstance", Integer.TYPE).invoke(null, slot)!!
             val sendRequest2 = Initiator.loadClass("org.telegram.tgnet.ConnectionsManager")
                 .getDeclaredMethod("sendRequest", kTLObject, kRequestDelegate)
             val currentOffset = AtomicInteger(0)
@@ -947,13 +954,7 @@ object DumpGroupMember : CommonDynamicHook() {
         if (currentSlot < 0) {
             error("queryUserGroupDescriptors: no active account")
         }
-        val accountInstance = Reflex.invokeStatic(
-            Initiator.loadClass("org.telegram.messenger.AccountInstance"),
-            "getInstance", currentSlot, Integer.TYPE
-        )!!
-        val messagesController = Reflex.invokeVirtual(accountInstance, "getMessagesController")!!
-        // MessagesController->getChat(Ljava/lang/Long;)Lorg/telegram/tgnet/TLRPC$Chat;
-        return Reflex.invokeVirtual(messagesController, "getChat", uid, java.lang.Long::class.java)
+        return AccountController.getCachedChat(currentSlot, uid)
     }
 
     @JvmStatic
@@ -1048,13 +1049,7 @@ object DumpGroupMember : CommonDynamicHook() {
         check(uid > 0) { "uid must be positive" }
         val currentSlot = AccountController.getCurrentActiveSlot()
         check(currentSlot >= 0) { "getUserFormCache: no active account" }
-        val accountInstance = Reflex.invokeStatic(
-            Initiator.loadClass("org.telegram.messenger.AccountInstance"),
-            "getInstance", currentSlot, Integer.TYPE
-        )!!
-        val messagesController = Reflex.invokeVirtual(accountInstance, "getMessagesController")!!
-        // MessagesController->getUser(Ljava/lang/Long;)Lorg/telegram/tgnet/TLRPC$User;
-        return Reflex.invokeVirtual(messagesController, "getUser", uid, java.lang.Long::class.java)
+        return AccountController.getCachedUser(currentSlot, uid)
     }
 
     @JvmStatic

@@ -1,8 +1,10 @@
 package cc.ioctl.tmoe.hook.func
 
-import androidx.collection.LongSparseArray
 import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
+import cc.ioctl.tmoe.rtti.deobf.MemberHistorySymbols
+import cc.ioctl.tmoe.rtti.deobf.MemberResultAdapter
 import cc.ioctl.tmoe.td.AccountController
 import cc.ioctl.tmoe.util.HookUtils
 import cc.ioctl.tmoe.util.Initiator
@@ -39,28 +41,43 @@ object LocalGroupMemberList : CommonDynamicHook() {
     private lateinit var mChatActivity_getCurrentChat: Method
 
     override fun initOnce(): Boolean {
-        kMentionsAdapter = Initiator.loadClass("org.telegram.ui.Adapters.MentionsAdapter")
         kChatFull = Initiator.loadClass("org.telegram.tgnet.TLRPC\$ChatFull")
         kChat = Initiator.loadClass("org.telegram.tgnet.TLRPC\$Chat")
-        kChatActivity = Initiator.loadClass("org.telegram.ui.ChatActivity")
-        fMentionsAdapter_info = Reflex.findField(kMentionsAdapter, kChatFull, "info").also {
-            it.isAccessible = true
+        val searchUsernameOrHashtag: Method
+        val showUsersResult: Method
+        val namedAdapter = Initiator.load("org.telegram.ui.Adapters.MentionsAdapter")
+        if (namedAdapter != null) {
+            kMentionsAdapter = namedAdapter
+            kChatActivity = Initiator.loadClass("org.telegram.ui.ChatActivity")
+            fMentionsAdapter_info = kMentionsAdapter.getDeclaredField("info")
+            fMentionsAdapter_chat = kMentionsAdapter.getDeclaredField("chat")
+            fMentionsAdapter_parentFragment = kMentionsAdapter.getDeclaredField("parentFragment")
+            fMentionsAdapter_resultStartPosition = kMentionsAdapter.getDeclaredField("resultStartPosition")
+            fMentionsAdapter_resultLength = kMentionsAdapter.getDeclaredField("resultLength")
+            mChatActivity_getCurrentChat = kChatActivity.getDeclaredMethod("getCurrentChat")
+            searchUsernameOrHashtag = kMentionsAdapter.declaredMethods.single {
+                it.name == "searchUsernameOrHashtag" && it.parameterTypes.size == 5
+            }
+            showUsersResult = kMentionsAdapter.declaredMethods.single {
+                it.name == "showUsersResult" && it.parameterTypes.size == 3
+            }
+        } else {
+            val symbols = MemberHistorySymbols.mentions(HostDexIndex.get())
+            searchUsernameOrHashtag = HostDexIndex.resolve(symbols.search)
+            showUsersResult = HostDexIndex.resolve(symbols.showUsers)
+            kMentionsAdapter = searchUsernameOrHashtag.declaringClass
+            mChatActivity_getCurrentChat = HostDexIndex.resolve(symbols.currentChat)
+            kChatActivity = mChatActivity_getCurrentChat.declaringClass
+            fMentionsAdapter_info = kMentionsAdapter.getDeclaredField(symbols.info.name)
+            fMentionsAdapter_chat = kMentionsAdapter.getDeclaredField(symbols.chat.name)
+            fMentionsAdapter_parentFragment = kMentionsAdapter.getDeclaredField(symbols.parent.name)
+            fMentionsAdapter_resultStartPosition = kMentionsAdapter.getDeclaredField(symbols.start.name)
+            fMentionsAdapter_resultLength = kMentionsAdapter.getDeclaredField(symbols.length.name)
         }
-        fMentionsAdapter_chat = Reflex.findField(kMentionsAdapter, kChat, "chat").also {
-            it.isAccessible = true
-        }
-        fMentionsAdapter_parentFragment = Reflex.findField(kMentionsAdapter, kChatActivity, "parentFragment").also {
-            it.isAccessible = true
-        }
-        fMentionsAdapter_resultStartPosition = Reflex.findField(kMentionsAdapter, Integer.TYPE, "resultStartPosition").also {
-            it.isAccessible = true
-        }
-        fMentionsAdapter_resultLength = Reflex.findField(kMentionsAdapter, Integer.TYPE, "resultLength").also {
-            it.isAccessible = true
-        }
-        mChatActivity_getCurrentChat = kChatActivity.declaredMethods.single {
-            it.name == "getCurrentChat" && it.parameterTypes.isEmpty()
-        }
+        listOf(fMentionsAdapter_info, fMentionsAdapter_chat, fMentionsAdapter_parentFragment,
+            fMentionsAdapter_resultStartPosition, fMentionsAdapter_resultLength).forEach { it.isAccessible = true }
+        mChatActivity_getCurrentChat.isAccessible = true
+        val results = MemberResultAdapter(showUsersResult)
         kTL_chatAdminRights = Initiator.loadClass("org.telegram.tgnet.TLRPC\$TL_chatAdminRights")
         fChat_admin_rights = Reflex.findField(kChat, kTL_chatAdminRights, "admin_rights")
         kChatParticipants = Initiator.loadClass("org.telegram.tgnet.TLRPC\$ChatParticipants")
@@ -71,21 +88,6 @@ object LocalGroupMemberList : CommonDynamicHook() {
         fChatFull_participants = Reflex.findField(kChatFull, kChatParticipants, "participants")
         kTL_chatParticipantAdmin = Initiator.loadClass("org.telegram.tgnet.TLRPC\$TL_chatParticipantAdmin")
         kTL_chatParticipantCreator = Initiator.loadClass("org.telegram.tgnet.TLRPC\$TL_chatParticipantCreator")
-
-        // org.telegram.ui.Adapters.MentionsAdapter#searchUsernameOrHashtag
-        // public void searchUsernameOrHashtag(CharSequence charSequence, int position, ArrayList<MessageObject> messageObjects, boolean usernameOnly, boolean forSearch)
-        val searchUsernameOrHashtag = kMentionsAdapter.declaredMethods.single {
-            it.name == "searchUsernameOrHashtag" && it.parameterTypes.size == 5
-        }
-
-        val showUsersResult = kMentionsAdapter.declaredMethods.single {
-            it.name == "showUsersResult" && it.parameterTypes.size == 3 && it.parameterTypes[0] == java.util.ArrayList::class.java
-        }.also {
-            it.isAccessible = true
-        }
-
-        // check linkage
-        shadowCastToHostLongSparseArray(LongSparseArray<Any>())
 
         HookUtils.hookBeforeIfEnabled(this, searchUsernameOrHashtag) { param ->
             val inputEditable = param.args[0] as CharSequence?
@@ -241,7 +243,7 @@ object LocalGroupMemberList : CommonDynamicHook() {
             }
             // set result
             val arraylist = ArrayList<Any>(resultArray.size)
-            val sparseArray = LongSparseArray<Any>(resultArray.size)
+            val resultKeys = ArrayList<Long>(resultArray.size)
             for (r in resultArray) {
                 val obj: Any = when (r) {
                     is DumpGroupMember.ITLUserDescriptor -> {
@@ -259,11 +261,11 @@ object LocalGroupMemberList : CommonDynamicHook() {
                 }
 
                 arraylist.add(obj)
-                sparseArray.put(r.uid, obj)
+                resultKeys.add(r.uid)
             }
             // call showUsersResult
             SyncUtils.runOnUiThread {
-                showUsersResult.invoke(param.thisObject, arraylist, shadowCastToHostLongSparseArray(sparseArray), true)
+                results.show(param.thisObject, arraylist, resultKeys.toLongArray())
             }
             // update resultStartPosition and resultLength
             fMentionsAdapter_resultStartPosition.setInt(param.thisObject, resultStartPosition)
@@ -273,22 +275,6 @@ object LocalGroupMemberList : CommonDynamicHook() {
         }
 
         return true
-    }
-
-    @JvmStatic
-    private fun shadowCastToHostLongSparseArray(origin: LongSparseArray<Any>): Any {
-        val kLongSparseArray = Initiator.loadClass(LongSparseArray::class.java.name)
-        val ctor = kLongSparseArray.declaredConstructors.single {
-            it.parameterTypes.size == 1 && it.parameterTypes[0] == Int::class.javaPrimitiveType
-        }
-        val put = kLongSparseArray.getDeclaredMethod("put", Long::class.javaPrimitiveType, Any::class.java)
-        val result = ctor.newInstance(origin.size())
-        for (i in 0 until origin.size()) {
-            val key = origin.keyAt(i)
-            val value = origin.valueAt(i)
-            put.invoke(result, key, value)
-        }
-        return result
     }
 
     private fun isSelfAdminInChat(chat: Any): Boolean {
