@@ -3,10 +3,10 @@ package cc.ioctl.tmoe.startup;
 import android.app.Application;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
 
 public class StartupHook {
     public static final StartupHook INSTANCE = new StartupHook();
@@ -45,21 +45,13 @@ public class StartupHook {
         if (rtLoader == null) {
             throw new AssertionError("StartupHook.doInit: rtLoader == null");
         }
-        Class<?> applicationClass = null;
+        Method onCreate;
         try {
-            applicationClass = rtLoader.loadClass("org.telegram.messenger.ApplicationLoader");
-        } catch (ClassNotFoundException ignored) {
+            onCreate = ApplicationLifecycleResolver.resolveOnCreate(rtLoader);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Unable to resolve host application lifecycle", e);
         }
-        if (applicationClass == null) {
-            try {
-                applicationClass = rtLoader.loadClass("org.thunderdog.challegram.BaseApplication");
-            } catch (ClassNotFoundException ignored) {
-            }
-        }
-        if (applicationClass == null) {
-            throw new AssertionError("StartupHook.doInit: unable to find ApplicationLoader");
-        }
-        XposedHelpers.findAndHookMethod(applicationClass, "onCreate", new XC_MethodHook(51) {
+        XposedBridge.hookMethod(onCreate, new XC_MethodHook(51) {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 Application app = (Application) param.thisObject;
