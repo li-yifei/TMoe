@@ -2,6 +2,8 @@ package cc.ioctl.tmoe.hook.func
 
 import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
+import cc.ioctl.tmoe.rtti.deobf.PrivacyReactionResolver
 import cc.ioctl.tmoe.util.HostInfo
 import cc.ioctl.tmoe.util.Initiator
 import cc.ioctl.tmoe.util.config.ConfigManager
@@ -36,6 +38,14 @@ object DisableQuickReaction : CommonDynamicHook() {
     }
 
     override fun initOnce(): Boolean = tryOrLogFalse {
+        if (loadClassOrNull("org.telegram.ui.ChatActivity") == null) {
+            getMethod("chat_double_tap_v2") {
+                HostDexIndex.resolve(PrivacyReactionResolver.doubleTapEnabled(HostDexIndex.get()))
+            }.hookBefore {
+                if (isEnabled) it.result = false
+            }
+            return@tryOrLogFalse
+        }
         getMethod("onItemClickListener_hasDoubleTap", {
             ezXClassLoader.getAllClassesList().asSequence()
                 .filter { it.startsWith("org.telegram.ui.ChatActivity$") }
