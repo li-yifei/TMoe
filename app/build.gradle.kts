@@ -114,6 +114,15 @@ tasks.withType<KotlinCompile>().configureEach {
     }
 }
 
+tasks.withType<Test>().configureEach {
+    val hostApk = providers.environmentVariable("TMOE_HOST_APK")
+    inputs.property("hostApkConfigured", hostApk.isPresent)
+    if (hostApk.isPresent) {
+        inputs.file(hostApk).withPropertyName("hostApk")
+        environment("TMOE_HOST_APK", hostApk.get())
+    }
+}
+
 dependencies {
     testImplementation("junit:junit:4.13.2")
     ksp(projects.libs.ksp)

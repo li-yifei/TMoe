@@ -35,7 +35,14 @@ public class ClassLocator {
         if (getThemeClass() != null) {
             return kThemeClass;
         }
-        kThemeClass = DexKit.doFindClass(DexKit.C_THEME);
+        try {
+            String descriptor = HostDexIndex.get().uniqueMethod(m ->
+                    m.getDefiningClass().startsWith("Lorg/telegram/ui/ActionBar/")
+                            && HostDexIndex.hasString(m, "light sensor unregistered")).getDefiningClass();
+            kThemeClass = Initiator.load(descriptor);
+        } catch (Exception e) {
+            Utils.loge(e);
+        }
         return kThemeClass;
     }
 
