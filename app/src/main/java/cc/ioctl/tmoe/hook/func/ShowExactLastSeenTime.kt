@@ -4,6 +4,8 @@ import android.icu.text.SimpleDateFormat
 import android.icu.util.Calendar
 import cc.ioctl.tmoe.base.annotation.FunctionHookEntry
 import cc.ioctl.tmoe.hook.base.CommonDynamicHook
+import cc.ioctl.tmoe.rtti.deobf.HostDexIndex
+import cc.ioctl.tmoe.rtti.deobf.StickerReactionResolver
 import cc.ioctl.tmoe.ui.LocaleController
 import cc.ioctl.tmoe.util.Initiator
 import cc.ioctl.tmoe.util.hookBeforeIfEnabled
@@ -17,17 +19,17 @@ object ShowExactLastSeenTime : CommonDynamicHook() {
 
     override fun initOnce(): Boolean {
         // org.telegram.messenger.LocaleController#formatDateOnline
-        val kLocaleController = Initiator.loadClass("org.telegram.messenger.LocaleController")
-        val formatDateOnline = kLocaleController.declaredMethods.single {
+        val kLocaleController = Initiator.load("org.telegram.messenger.LocaleController")
+        val formatDateOnline = kLocaleController?.declaredMethods?.singleOrNull {
             it.name == "formatDateOnline" && it.parameterTypes.isNotEmpty() && it.parameterTypes[0] == Long::class.java
-        }
+        } ?: HostDexIndex.resolve(StickerReactionResolver.dateOnline(HostDexIndex.get()))
         hookBeforeIfEnabled(formatDateOnline) {
             val timeMillis = (it.args[0] as Long) * 1000L
             val strLastSeenFormatted = LocaleController.getString("LastSeenFormatted")
             val strYesterdayAtFormatted = LocaleController.getString("YesterdayAtFormatted")
             val strLastSeenDateFormatted = LocaleController.getString("LastSeenDateFormatted")
-            val hasLocError =
-                strLastSeenFormatted.contains("LC_ERR") || strYesterdayAtFormatted.contains("LC_ERR") || strLastSeenDateFormatted.contains("LC_ERR")
+            val hasLocError = listOf(strLastSeenFormatted, strYesterdayAtFormatted, strLastSeenDateFormatted)
+                .any { it.contains("LC_ERR") || it.contains("LOC_ERR") }
             it.result = when {
                 hasLocError -> mFormatterDateTime.format(timeMillis)  // sigh...
                 isToday(timeMillis) -> strLastSeenFormatted.format(mFormatterTime.format(timeMillis))
